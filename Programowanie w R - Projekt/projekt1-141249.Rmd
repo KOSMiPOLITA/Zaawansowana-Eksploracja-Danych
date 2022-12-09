@@ -1,0 +1,279 @@
+---
+title: "Programowanie w R: Projekt"
+author: "Eryk Kosmala 141249"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: yes
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r biblioteki}
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(tidyr)
+library(gapminder)
+library(gganimate)
+library(plotly)
+library(sjmisc)
+library(caret)
+library(mlbench)
+library(transformr)
+set.seed(621)
+```
+
+```{r wczytywanie_danych, cache=TRUE}
+data <- read.csv('sledzie.csv', na.strings = '?')
+```
+
+## Podsumowanie
+
+Celem raportu była analiza danych dotyczących połowu i długości śledzia w Europie na przestrzeni lat. Na podstawie otrzymanych danych należało zaobserwować najważniejsze czynniki wpływające na długość śledzia, w celu późniejszego przygotowania regresora, 
+przewidującego rozmiar śledzia. Ze względu na brak dokładnych dat pomiarów w dostępnym zbiorze danych oraz dużą liczbę wartości NA poszczególnych atrybutów w pomiarach poniższa analiza może odbiegać od rzeczywistości, jednak aby zapewnić wiarygodność eksperymentu i analizy, zastosowano metody, które pozwoliły na oszacowanie brakujących wartości. Dodatkowo wykorzystując dane o rocznym narybku przygotowano dodatkową kolumnę, której celem było określenie roku, a co za tym idzie chronologii poszczególnych pomiarów. 
+
+Pierwsze ważne wnioski można było wyciągnąć już podczas szczegółowej analizy atrybutów w zbiorze danych. Zaobserwowano, że rozkład wartości atrybutu __length__ (długość śledzia) jest zbliżony do rozkładu normalnego. Zgodnie z centralnym twierdzeniem granicznym: _"jeśli jakaś wielkość jest sumą lub średnią bardzo wielu drobnych losowych czynników, to niezależnie od rozkładu każdego z tych czynników jej rozkład będzie zbliżony do normalnego"_ - możemy założyć więc, że na długość śledzia jest zależna od jakiś zmiennych. Dalsze badania miały za zadanie wskazać, które z atrybutów, wpływają w największym stopniu na długość śledzia. W tym celu wyliczono korelacje poszczególnych atrybutów, aby zaobserwować zmienne zależne od siebie i te które w największym stopniu korelowały z atrybutem __length__. 
+
+Obserwacje te pozwoliły na przygotowanie, a następnie przetestowanie poszczególnych modeli mającym za zadanie stworzenie regresora przewidującego długość śledzia na podstawie otrzymanych danych. Zgodnie z wynikami badań, jako zmienne objaśniające wybrano:
+
+* sst - temperatura przy powierzchni wody [°C];
+* nao - oscylacja północnoatlantycka [mb].
+* fbar - natężenie połowów w regionie [ułamek pozostawionego narybku];
+* lcop1 - dostępność planktonu [zagęszczenie widłonogów gat. 1];
+
+Po przygotowaniu i przetestowaniu wybranych modeli, dla regresora o najmniejszej wartości pierwiastka błędu średniokwadratowego i największej wartości współczynnika determinacji, przeprowadzono ocenę ważności atrybutów, z której wynikało, że największy wpływ na długość śledzia mają temperatura przy powierzchni wody oraz natężenie połowów w regionie. 
+
+## Określenie roków dla pomiarów
+
+Ponieważ w danych oprócz atrybutu __xmonth__ nie ma żadnej innej informacji o czasie konkretnego pomiaru, należało określić sposób wykrycia, które miesiące odnoszą się do tego samego roku. 
+
+Ze względu na zaobserwowany brak zachowania chronologii poszczególnych miesięcy, nie można było założyć, że wraz z wystąpieniem identyfikatora miesiąca o mniejszej wartości niż z wiersza wcześniejszego, mamy do czynienia ze zmianą roku, dlatego należało zdecydować się na inną metodę.
+
+Sposobem określenia roku, na który się zdecydowałem, było wyznaczenie roku na podstawie wartości __recr__ - roczny narybek [liczba śledzi]. Po opisie atrybutu można wnioskować, że dla danego roku powinna być tam ta sama wartość dla wszystkich miesięcy z tego też roku. Do zbioru danych dodałem więc dodatkową kolumnę, w której zapisywałem identyfikator danego roku. Identyfikator ten był wyznaczany jako pozycja komórki o tej samej wartości recr w wektorze unikalnych wartości recr - założyłem, że kolejność wystąpienia danej wartości w tym wektorze, określa chronologię kolejnych lat.
+
+```{r przygotowanie_danych}
+years <- unique(data$recr)
+size <- dim(data)
+data <- data %>% mutate(year = match(recr, years)) %>% group_by(year) %>% arrange(year, xmonth)
+means <- data %>% summarise_all(funs(mean), na.rm = TRUE)
+means <- means %>% relocate(recr, .before = "cumf") %>% relocate(year, .after = "nao")
+```
+
+## Brakujące dane
+
+Po obserwacji danych zdecydowałem się na następującą metodę:
+
+Określiłem tabelę __means__, która zawierała wartości średnich kolumn, pogrupowanych po roku pomiaru. Wartości te zostały wyliczone bez uwzględnienia wartości NA. Następnie dla każdej komórki zawierającą wartość NA przypisałem wartość średnią odpowiadającej jej kolumny, której wiersz był ustalany na podstawie tej samej wartości __recr__ w obu zbiorach.
+
+```{r brakujace_dane, echo = TRUE}
+for(i in 1:nrow(data)){
+  for(j in 1:ncol(data)){
+    if (is.na(data[i,j])) {
+      data[i, j] <- means[which(means$recr==as.numeric(data[i, 10]), arr.ind=TRUE), j]
+    }
+  }
+}
+```
+
+## Rozmiar zbioru i podstawowe statystyki
+
+Zbiór składa się z __`r size[2]`__ kolumn: _`r colnames(data[-length(data)])`_ oraz __`r size[1]`__ wierszy.
+
+Dla każdej kolumny (atrybutu) zostały wyliczone podstawowe statystyki:
+
+* wartość minimalna oraz maksymalna
+* pierwszy, drugi (mediana) oraz trzeci kwartyl
+* średnia wartość
+
+Wartości te nie zostały obliczone dla pierwszej kolumny X, która jest identyfikatorem poszczególnych pomiarów.
+
+```{r tb_summary}
+knitr::kable(summary(data[, 2:6]))
+```
+
+```{r tb_summary2}
+knitr::kable(summary(data[, 7:11]))
+```
+
+```{r tb_summary3}
+knitr::kable(summary(data[, 12:16]))
+```
+
+## Szczegółową analizę wartości atrybutów
+
+W tej sekcji dla każdej kolumny przygotowano histogram pokazujący rozkład wartości danego atrybutu. Z ciekawszych obserwacji można zauważyć, że wartości długości śledzi wyglądają podobnie do rozkładu normalnego.
+
+```{r analiza_atrybutow, fig.height=10}
+att <- colnames(data)[-1]
+plot_data <- data %>% pivot_longer(colnames(data)[-c(1, length(data))]) %>% as.data.frame() 
+p <- ggplot(plot_data, aes(x = value)) + geom_histogram() + facet_wrap(~ name, scales = "free", ncol=3)
+p + labs(title = "Analiza poszczególnych atrybutów", x="Wartość", y="Liczba poszczególnych wartości") + theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=0.5))
+```
+
+## Korelacje poszczególnych atrybutów
+
+Poniżej znajduje się wykres korelacji pomiędzy poszczególnymi atrybutami w zbiorze danych. Tak jak we wcześniejszych badaniach, tak i tutaj pominięto identyfikator poszczególnych pomiarów.
+
+```{r corelation}
+correlation <- cor(data[, -c(1, ncol(data))])
+corrplot(round(correlation,
+  digits = 2
+), type="upper", method="color", diag = FALSE, addCoef.col = 1, number.cex = 0.65)
+```
+
+Obserwacja korelacji ma duże znaczenie dla późniejszego przygotowania regresora, którego celem byłoby przewidywanie długości śledzia. Pozwala nam ona na podjęcie dwóch ważnych działań. Po pierwsze, możemy wybrać atrybuty, które wykazują największą korelację z atrybutem __length__. Jednocześnie pozwala nam ona na odrzucenie tych atrybutów, które wykazują wysoką korelację między sobą - jeżeli dwa atrybuty mają wysoką korelację zarówno z __length__ jak i same ze sobą, to do modelu wystarczy podać tylko jedną z nich. 
+
+## Wykresy prezentujące zmianę rozmiaru śledzia
+
+### Rozkład atrybutu __length__ na przestrzeni lat z podziałem na miesiące
+
+```{r animowany, fig.height=6}
+month.lab <- paste('month', 1:12)
+names(month.lab) <- 1:12
+plot.data <- select(data, length, year, xmonth) %>% arrange(year, xmonth)
+p <- ggplot(plot.data,aes(x=length)) + geom_density(col="red", linewidth=1) + facet_wrap(~ xmonth, ncol=4, labeller = labeller(xmonth = month.lab))
+p + transition_time(year) + labs(title = "Rozmiar śledzia na przestrzeni lat dla poszczególnych miesięcy \n Rok: {frame_time}", x="Długość śledzia", y="Gęstość zmiennej") + ease_aes('linear')
+```
+
+### Średnia długość śledzia na przestrzeni lat
+
+```{r statyczny}
+year.plot <- data %>% summarise(average_length = mean(length, na.rm = TRUE))
+p <- ggplot(year.plot, aes(x=year, y=average_length)) + geom_line() + geom_point() + geom_smooth(data = year.plot, method="glm")
+p + labs(title = "Średnia długość śledzia na przestrzeni lat", x="Lata", y="Średnia długość śledzia")
+```
+
+## Regresor
+ 
+Jako zmienne modelu wybrałem te zmienne o największych wartościach bezwzględnych korelacji z atrybutem length. Przy czym należy zaznaczyć, że odrzuciłem zmienną __chel1__ ze względu na fakt, że miała wysoką wartość korelacji ze zmienną __lcop1__, która także została wybrana do modelu.
+
+Dla dwóch modeli zastosowano opcję tuneGrid, która pozwala na wybór najlepszej wartości paramteru, aby optymalizować wynik. Po wyborze wartości wspomnianych parametrów, zakomentowałem linię uruchamiającą wspomnianą optymalizację oraz ustawiłem wartości poszczególych parametrów, na te wskazane przez tuneGrid. 
+
+```{r regresor}
+inTraining <- createDataPartition(y = data$length, p = .8, list = FALSE)
+training <- data[ inTraining,]
+testing  <- data[-inTraining,]
+
+ctrl <- trainControl(method = "repeatedcv", number = 2, repeats = 5)
+rfGrid <- expand.grid(mtry = 29) #(mtry = 10:30)
+lassoGrid <- expand.grid(
+  .fraction = 1 #seq(0, 1, by = 0.05)
+)
+
+model1 <- train(
+  length ~ sst + nao + fbar + lcop1, # bez chel1 
+  data=data,  
+  method="lm", 
+  trControl=ctrl,
+  preProcess = c('scale', 'center'),
+  na.action = na.omit
+  )
+
+predicted1 <- predict(model1, newdata=testing[,-c(1,2)])
+actual1 <- testing[,2]
+rmse1 <- sqrt((sum((predicted1-actual1) ^ 2)) / length(predicted1))
+rs1 <- cor(actual1, predicted1) ^ 2
+
+model2 <- train(
+  length ~ sst + nao + fbar + lcop1, # bez chel1 
+  data=data,  
+  method="lasso", 
+  trControl=ctrl,
+  preProcess = c('scale', 'center'),
+  na.action = na.omit,
+  tuneGrid= lassoGrid
+  # .fraction
+  )
+
+predicted2 <- predict(model2, newdata=testing[,-c(1,2)])
+actual2 <- testing[,2]
+rmse2 <- sqrt((sum((predicted2-actual2) ^ 2)) / length(predicted2))
+rs2 <- cor(actual2, predicted2) ^ 2
+
+model3 <- train(
+  length ~ sst + nao + fbar + lcop1, # bez chel1 
+  data=data,  
+  method="rf", 
+  trControl=ctrl,
+  preProcess = c('scale', 'center'),
+  na.action = na.omit,
+  tuneGrid = rfGrid
+  )
+
+predicted3 <- predict(model3, newdata=testing[,-c(1,2)])
+actual3 <- testing[,2]
+rmse3 <- sqrt((sum((predicted3-actual3) ^ 2)) / length(predicted3))
+rs3 <- cor(actual3, predicted3) ^ 2
+```
+
+### Regresja liniowa
+Wynik modelu na zbiorze treningowym:
+```{r model1}
+model1
+```
+
+Wartość RMSE dla zbioru testowego: `r rmse1`
+
+Wartość R^2 dla zbioru testowego: `r rs1`
+
+### Regresja liniowa Lasso
+Wynik modelu na zbiorze treningowym:
+```{r model2}
+model2
+```
+
+Wartość RMSE dla zbioru testowego: `r rmse2`
+
+Wartość R^2 dla zbioru testowego: `r rs2`
+
+### Random forest
+Wynik modelu na zbiorze treningowym:
+```{r model3}
+model3
+```
+
+Wartość RMSE dla zbioru testowego: `r rmse3`
+
+Wartość R^2 dla zbioru testowego: `r rs3`
+
+Patrząc na wyniki poszczególnych modeli, jako najlpeszy wybrano model z metodą random forest, gdyż osiągał on najniższe wartości RMSE oraz największe R^2.
+
+## Ocena ważności atrybutów
+
+Ocena ważności atrybutów dla trzeciego (najlepszego) modelu.
+
+```{r ocena_atrybutow}
+importance <- varImp(model3, scale=FALSE)
+plot(importance)
+```
+
+Na wykresie można zauważyć, że największy wpływ na wartość __length__ ma zmienna __sst__. Atrybut __fbar__ nie ma aż tak dużego wpływu na wartość długości śledzia jak wartość temperatury przy powierzchni wody, jednak można zauważyć, że jest istotniejsza od pozostałych dwóch zmiennych. Warto też nadmienić, że zagęszczenie widłonogów (gatunek planktona) ma większe oddziaływanie na rozmiar śledzia, niż oscylacja północnoatlantycka - można założyć, że ilość spożywanego przez niego pokarmu, przekłada się na jego długość. Może wydawać się to oczywistym wnioskiem, jednak należy to jednak wyraźnie zaznaczyć, żeby nie pozostawić żadnych wątpliwości.  
+
+### Omówienie najważniejszych atrybutów
+
+Na podstawie zaprezentowanego poniżej wykresu:
+
+```{r wykres_sst}
+sst.plot <- data %>% summarise(average_sst = mean(sst, na.rm = TRUE))
+p <- ggplot(sst.plot, aes(x=year, y=average_sst)) + geom_line() + geom_point() + geom_smooth(data = sst.plot, method="glm")
+p + labs(title = "Średnia temperatura na przestrzeni lat", x="Lata", y="Średnia temperatura °C")
+```
+
+można zauważyć, że średnia temperatura przy powierzchni wody wzrasta z kolejnymi latami. Ponieważ badanie ważności atrybutów wykazało, że największy wpływ na długość śledzia ma właśnie atrybut __sst__ możemy wnioskować, że nawet najmniejsza zmiana temperatury znacząco wpływa na rozmiar tego gatunku. Zmiany mogą nie być zauważalne od razu i choć z roku na rok, są to niewielkie zmiany, to można zauważyć u nich stałą rosnącą tendencję. 
+
+Dodatkowo na jego długość wpływa także natężenie połowów w regionie [ułamek pozostawionego narybku].
+
+```{r wykres_fbar}
+fbar.plot <- data %>% summarise(average_fbar = mean(fbar, na.rm = TRUE))
+p <- ggplot(fbar.plot, aes(x=year, y=average_fbar)) + geom_line() + geom_point() + geom_smooth(data = fbar.plot, method="glm")
+p + labs(title = "Średnie natężenie połowów na przestrzeni lat", x="Lata", y="Ułamek pozostawionego narybku")
+```
+
+Na przedstawionym powyżej wykresie można zauważyć, że wraz z kolejnymi latami ułamek pozostawionego narybku znacząco zmalał, co także przekłada się na długość śledzia. Widać także malejącą tendencję, co za tym idzie, możemy założyć, że w kolejnych latach wartość ta będzie ulegała tylko pogorszeniu - przy założeniu, że obecne podejście do połowu ryb nie zmieni się w żaden drastyczny sposób.
+
+Wyciągając dalsze wnioski, nie ograniczając się przy tym tylko do posiadanych w zbiorze danych, możemy założyć, że jednym z bezpośrednich czynników wpływającym na długość śledzia, jest ocieplenie klimatu, a co za tym idzie działalność człowieka i eksploatowanie przez niego Ziemi. Swoimi działaniami czynnie oddziałujemy na otaczający nas świat, a podejmowane przez nas decyzję mają znaczący wpływ na stan planety, co przekłada się na stan zamieszkujących go istot. Jak chociażby w przypadku śledzi i faktu, że wraz z kolejnymi latami ich średnia długość niezmiennie skraca się. To jeden z dowodów na to, że nasze działania mają daleko idące konsekwencję na otaczający nas świat.
